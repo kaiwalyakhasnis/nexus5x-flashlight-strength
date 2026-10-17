@@ -1,0 +1,939 @@
+From 22c3c5b5238a2420c37d134d82ba9ddad922d354 Mon Sep 17 00:00:00 2001
+From: kk <kaiwalya.khasnis57@gmail.com>
+Date: Sat, 17 Oct 2026 10:22:23 +0900
+Subject: [PATCH] SystemUI: add a flashlight strength dialog
+
+Long press on the flashlight tile now opens a "Flashlight Strength"
+dialog modelled on the one in Android 16: a vertical slider drawn as a
+light beam above a flashlight icon, a Turn on/off button and Done.
+
+The strength is written to a system property that the camera HAL reads,
+named by config_flashlightStrengthProperty, with one value per level in
+config_flashlightStrengthValues. Both are empty by default, which keeps
+the old long press behaviour. While the torch is on, changes are applied
+right away by turning the torch on again; only the latest level is sent
+while dragging.
+
+Settings can open the same dialog with the protected broadcast
+com.android.systemui.action.SHOW_FLASHLIGHT_STRENGTH.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/SystemUI/AndroidManifest.xml         |   9 +
+ .../flashlight_strength_button_filled.xml     |  25 ++
+ .../flashlight_strength_button_outline.xml    |  25 ++
+ .../flashlight_strength_dialog_bg.xml         |  23 ++
+ .../res/layout/flashlight_strength_dialog.xml |  67 +++++
+ packages/SystemUI/res/values/cm_strings.xml   |  11 +
+ .../SystemUI/res/values/lineage_colors.xml    |  28 ++
+ .../SystemUI/res/values/lineage_config.xml    |   8 +
+ .../SystemUI/res/values/lineage_dimens.xml    |   3 +
+ packages/SystemUI/res/values/styles.xml       |  13 +
+ .../flashlight/FlashlightBeamView.java        | 243 ++++++++++++++++++
+ .../flashlight/FlashlightStrengthDialog.java  | 114 ++++++++
+ .../FlashlightStrengthReceiver.java           |  38 +++
+ .../systemui/qs/tiles/FlashlightTile.java     |   7 +-
+ .../policy/FlashlightController.java          |   7 +
+ .../policy/FlashlightControllerImpl.java      |  82 ++++++
+ .../utils/leaks/FakeFlashlightController.java |  15 ++
+ 17 files changed, 717 insertions(+), 1 deletion(-)
+ create mode 100644 packages/SystemUI/res/drawable/flashlight_strength_button_filled.xml
+ create mode 100644 packages/SystemUI/res/drawable/flashlight_strength_button_outline.xml
+ create mode 100644 packages/SystemUI/res/drawable/flashlight_strength_dialog_bg.xml
+ create mode 100644 packages/SystemUI/res/layout/flashlight_strength_dialog.xml
+ create mode 100644 packages/SystemUI/res/values/lineage_colors.xml
+ create mode 100644 packages/SystemUI/src/com/android/systemui/flashlight/FlashlightBeamView.java
+ create mode 100644 packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthDialog.java
+ create mode 100644 packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthReceiver.java
+
+diff --git a/packages/SystemUI/AndroidManifest.xml b/packages/SystemUI/AndroidManifest.xml
+index c5b2fc926fc..92c586ea1bb 100644
+--- a/packages/SystemUI/AndroidManifest.xml
++++ b/packages/SystemUI/AndroidManifest.xml
+@@ -249,6 +249,15 @@
+             </intent-filter>
+         </receiver>
+ 
++        <!-- Started from Settings to show the flashlight strength dialog -->
++        <receiver android:name=".flashlight.FlashlightStrengthReceiver"
++            android:exported="true"
++            android:permission="android.permission.STATUS_BAR">
++            <intent-filter>
++                <action android:name="com.android.systemui.action.SHOW_FLASHLIGHT_STRENGTH" />
++            </intent-filter>
++        </receiver>
++
+         <receiver android:name=".SysuiRestartReceiver"
+             android:exported="false">
+             <intent-filter>
+diff --git a/packages/SystemUI/res/drawable/flashlight_strength_button_filled.xml b/packages/SystemUI/res/drawable/flashlight_strength_button_filled.xml
+new file mode 100644
+index 00000000000..bef5de9af65
+--- /dev/null
++++ b/packages/SystemUI/res/drawable/flashlight_strength_button_filled.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2026 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<ripple xmlns:android="http://schemas.android.com/apk/res/android"
++    android:color="?android:attr/colorControlHighlight">
++    <item>
++        <shape android:shape="rectangle">
++            <solid android:color="@color/flashlight_strength_button_filled" />
++            <corners android:radius="20dp" />
++        </shape>
++    </item>
++</ripple>
+diff --git a/packages/SystemUI/res/drawable/flashlight_strength_button_outline.xml b/packages/SystemUI/res/drawable/flashlight_strength_button_outline.xml
+new file mode 100644
+index 00000000000..f5663214b05
+--- /dev/null
++++ b/packages/SystemUI/res/drawable/flashlight_strength_button_outline.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2026 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<ripple xmlns:android="http://schemas.android.com/apk/res/android"
++    android:color="?android:attr/colorControlHighlight">
++    <item>
++        <shape android:shape="rectangle">
++            <stroke android:width="1dp" android:color="@color/flashlight_strength_outline" />
++            <corners android:radius="20dp" />
++        </shape>
++    </item>
++</ripple>
+diff --git a/packages/SystemUI/res/drawable/flashlight_strength_dialog_bg.xml b/packages/SystemUI/res/drawable/flashlight_strength_dialog_bg.xml
+new file mode 100644
+index 00000000000..96943f74dc5
+--- /dev/null
++++ b/packages/SystemUI/res/drawable/flashlight_strength_dialog_bg.xml
+@@ -0,0 +1,23 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2026 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<inset xmlns:android="http://schemas.android.com/apk/res/android"
++    android:inset="16dp">
++    <shape android:shape="rectangle">
++        <solid android:color="@color/flashlight_strength_dialog_bg" />
++        <corners android:radius="28dp" />
++    </shape>
++</inset>
+diff --git a/packages/SystemUI/res/layout/flashlight_strength_dialog.xml b/packages/SystemUI/res/layout/flashlight_strength_dialog.xml
+new file mode 100644
+index 00000000000..39b0bd640ce
+--- /dev/null
++++ b/packages/SystemUI/res/layout/flashlight_strength_dialog.xml
+@@ -0,0 +1,67 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2026 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:orientation="vertical"
++    android:paddingStart="24dp"
++    android:paddingEnd="24dp"
++    android:paddingTop="24dp"
++    android:paddingBottom="20dp">
++
++    <TextView
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:gravity="center"
++        android:text="@string/flashlight_strength_title"
++        android:textColor="@color/flashlight_strength_text"
++        android:textSize="22sp"
++        android:fontFamily="sans-serif" />
++
++    <com.android.systemui.flashlight.FlashlightBeamView
++        android:id="@+id/flashlight_strength_beam"
++        android:layout_width="136dp"
++        android:layout_height="180dp"
++        android:layout_gravity="center_horizontal"
++        android:layout_marginTop="24dp" />
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:layout_marginTop="24dp"
++        android:orientation="horizontal">
++
++        <Button
++            android:id="@+id/flashlight_strength_toggle"
++            style="@style/FlashlightStrengthButton"
++            android:background="@drawable/flashlight_strength_button_outline"
++            android:text="@string/flashlight_strength_turn_off"
++            android:textColor="@color/flashlight_strength_text" />
++
++        <Space
++            android:layout_width="0dp"
++            android:layout_height="0dp"
++            android:layout_weight="1" />
++
++        <Button
++            android:id="@+id/flashlight_strength_done"
++            style="@style/FlashlightStrengthButton"
++            android:background="@drawable/flashlight_strength_button_filled"
++            android:text="@string/flashlight_strength_done"
++            android:textColor="@color/flashlight_strength_button_filled_text" />
++    </LinearLayout>
++</LinearLayout>
+diff --git a/packages/SystemUI/res/values/cm_strings.xml b/packages/SystemUI/res/values/cm_strings.xml
+index c90697325c9..c26acde27d0 100644
+--- a/packages/SystemUI/res/values/cm_strings.xml
++++ b/packages/SystemUI/res/values/cm_strings.xml
+@@ -157,4 +157,15 @@
+     <string name="accessibility_quick_settings_reading_mode_changed_on">Reading mode turned on.</string>
+     <!-- Content description of the reader mode tile when turned off -->
+     <string name="accessibility_quick_settings_reading_mode_changed_off">Reading mode turned off.</string>
++
++    <!-- Flashlight strength dialog: title [CHAR LIMIT=40] -->
++    <string name="flashlight_strength_title">Flashlight Strength</string>
++    <!-- Flashlight strength dialog: button that turns the flashlight off [CHAR LIMIT=20] -->
++    <string name="flashlight_strength_turn_off">Turn off</string>
++    <!-- Flashlight strength dialog: button that turns the flashlight on [CHAR LIMIT=20] -->
++    <string name="flashlight_strength_turn_on">Turn on</string>
++    <!-- Flashlight strength dialog: button that closes the dialog [CHAR LIMIT=20] -->
++    <string name="flashlight_strength_done">Done</string>
++    <!-- Flashlight strength dialog: content description of the strength slider [CHAR LIMIT=NONE] -->
++    <string name="accessibility_flashlight_strength">Flashlight strength <xliff:g id="percent" example="50%">%1$s</xliff:g></string>
+ </resources>
+diff --git a/packages/SystemUI/res/values/lineage_colors.xml b/packages/SystemUI/res/values/lineage_colors.xml
+new file mode 100644
+index 00000000000..12bcbc576b0
+--- /dev/null
++++ b/packages/SystemUI/res/values/lineage_colors.xml
+@@ -0,0 +1,28 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2026 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<resources>
++    <!-- Flashlight strength dialog -->
++    <color name="flashlight_strength_dialog_bg">#FFFFFFFF</color>
++    <color name="flashlight_strength_text">#FF1F1F1F</color>
++    <color name="flashlight_strength_outline">#FF747775</color>
++    <color name="flashlight_strength_button_filled">#FF1F2A24</color>
++    <color name="flashlight_strength_button_filled_text">#FFFFFFFF</color>
++    <color name="flashlight_strength_beam">#FF1F1F1F</color>
++    <color name="flashlight_strength_beam_top">#FF5F6368</color>
++    <color name="flashlight_strength_beam_off">#FF9AA0A6</color>
++    <color name="flashlight_strength_track">#FFE3E3E3</color>
++</resources>
+diff --git a/packages/SystemUI/res/values/lineage_config.xml b/packages/SystemUI/res/values/lineage_config.xml
+index 0524853e372..2f9b2b957fc 100644
+--- a/packages/SystemUI/res/values/lineage_config.xml
++++ b/packages/SystemUI/res/values/lineage_config.xml
+@@ -28,4 +28,12 @@
+          the sensor embedded in the power key and listening all the time
+          causes a poor experience. -->
+     <bool name="config_fingerprintWakeAndUnlock">true</bool>
++
++    <!-- Flashlight strength: system property the camera HAL reads the torch strength
++         from, and the value written for each strength level (lowest first).
++         Leave the property empty if the flash unit can't change its strength. -->
++    <string name="config_flashlightStrengthProperty" translatable="false"></string>
++    <integer-array name="config_flashlightStrengthValues" />
++    <!-- Level shown when the property hasn't been set yet, from 1 -->
++    <integer name="config_flashlightStrengthDefaultLevel">1</integer>
+ </resources>
+diff --git a/packages/SystemUI/res/values/lineage_dimens.xml b/packages/SystemUI/res/values/lineage_dimens.xml
+index 4772b317931..ffc784db83d 100644
+--- a/packages/SystemUI/res/values/lineage_dimens.xml
++++ b/packages/SystemUI/res/values/lineage_dimens.xml
+@@ -18,4 +18,7 @@
+ <resources>
+     <!-- Largest size an avatar might need to be drawn in the power menu user picker -->
+     <dimen name="global_actions_avatar_size">24dp</dimen>
++
++    <!-- Flashlight strength dialog width, including the 16dp background inset -->
++    <dimen name="flashlight_strength_dialog_width">344dp</dimen>
+ </resources>
+diff --git a/packages/SystemUI/res/values/styles.xml b/packages/SystemUI/res/values/styles.xml
+index 90c5977e2a6..4379a7095a1 100644
+--- a/packages/SystemUI/res/values/styles.xml
++++ b/packages/SystemUI/res/values/styles.xml
+@@ -489,4 +489,17 @@
+         <item name="android:colorBackground">?android:attr/colorSecondary</item>
+     </style>
+ 
++    <style name="FlashlightStrengthButton" parent="@android:style/Widget.Material.Button.Borderless">
++        <item name="android:layout_width">wrap_content</item>
++        <item name="android:layout_height">40dp</item>
++        <item name="android:minWidth">0dp</item>
++        <item name="android:minHeight">0dp</item>
++        <item name="android:paddingStart">20dp</item>
++        <item name="android:paddingEnd">20dp</item>
++        <item name="android:textAllCaps">false</item>
++        <item name="android:textSize">14sp</item>
++        <item name="android:fontFamily">sans-serif-medium</item>
++        <item name="android:stateListAnimator">@null</item>
++    </style>
++
+ </resources>
+diff --git a/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightBeamView.java b/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightBeamView.java
+new file mode 100644
+index 00000000000..d580b5dde32
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightBeamView.java
+@@ -0,0 +1,243 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.flashlight;
++
++import android.content.Context;
++import android.graphics.Canvas;
++import android.graphics.LinearGradient;
++import android.graphics.Paint;
++import android.graphics.Path;
++import android.graphics.RectF;
++import android.graphics.Shader;
++import android.graphics.drawable.Drawable;
++import android.os.Bundle;
++import android.util.AttributeSet;
++import android.view.MotionEvent;
++import android.view.View;
++import android.view.accessibility.AccessibilityNodeInfo;
++import android.widget.SeekBar;
++
++import com.android.systemui.R;
++
++import java.text.NumberFormat;
++
++/**
++ * Vertical slider drawn as a flashlight beam: a cone that widens upwards from a
++ * flashlight icon. The beam fills from the bottom up to the current level.
++ */
++public class FlashlightBeamView extends View {
++
++    public interface OnLevelChangeListener {
++        void onLevelChanged(int level);
++    }
++
++    private final Paint mTrackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint mFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint mLensPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Path mBeamPath = new Path();
++    private final RectF mLensRect = new RectF();
++    private final Drawable mIcon;
++
++    private final int mFillColor;
++    private final int mFillTopColor;
++    private final int mOffFillColor;
++    private final float mLensHeight;
++    private final float mLensGap;
++    private final float mIconSize;
++    private final float mIconGap;
++
++    private float mBeamTop;
++    private float mBeamBottom;
++
++    private int mMax = 1;
++    private int mLevel = 1;
++    private boolean mTorchOn;
++    private OnLevelChangeListener mListener;
++
++    public FlashlightBeamView(Context context, AttributeSet attrs) {
++        super(context, attrs);
++        final float density = getResources().getDisplayMetrics().density;
++        mLensHeight = 6 * density;
++        mLensGap = 4 * density;
++        mIconSize = 40 * density;
++        mIconGap = 4 * density;
++
++        mFillColor = context.getColor(R.color.flashlight_strength_beam);
++        mFillTopColor = context.getColor(R.color.flashlight_strength_beam_top);
++        mOffFillColor = context.getColor(R.color.flashlight_strength_beam_off);
++        mTrackPaint.setColor(context.getColor(R.color.flashlight_strength_track));
++        mLensPaint.setColor(context.getColor(R.color.flashlight_strength_track));
++
++        mIcon = context.getDrawable(R.drawable.ic_signal_flashlight).mutate();
++        mIcon.setTint(mFillColor);
++
++        setFocusable(true);
++        setClickable(true);
++    }
++
++    public void setOnLevelChangeListener(OnLevelChangeListener listener) {
++        mListener = listener;
++    }
++
++    public void setMax(int max) {
++        mMax = Math.max(1, max);
++        mLevel = Math.min(mLevel, mMax);
++        updateContentDescription();
++        invalidate();
++    }
++
++    public void setLevel(int level) {
++        level = Math.max(1, Math.min(level, mMax));
++        if (level != mLevel) {
++            mLevel = level;
++            updateContentDescription();
++            invalidate();
++        }
++    }
++
++    public int getLevel() {
++        return mLevel;
++    }
++
++    public void setTorchOn(boolean on) {
++        if (on != mTorchOn) {
++            mTorchOn = on;
++            updateFillShader();
++            invalidate();
++        }
++    }
++
++    @Override
++    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
++        super.onSizeChanged(w, h, oldw, oldh);
++        final float topWidth = w;
++        final float bottomWidth = w * 0.3f;
++        mBeamTop = mLensHeight + mLensGap;
++        mBeamBottom = h - mIconSize - mIconGap;
++
++        final float cx = w / 2f;
++        mBeamPath.reset();
++        mBeamPath.moveTo(cx - topWidth / 2f, mBeamTop);
++        mBeamPath.lineTo(cx + topWidth / 2f, mBeamTop);
++        mBeamPath.lineTo(cx + bottomWidth / 2f, mBeamBottom);
++        mBeamPath.lineTo(cx - bottomWidth / 2f, mBeamBottom);
++        mBeamPath.close();
++
++        mLensRect.set(0, 0, w, mLensHeight);
++
++        final int iconLeft = (int) (cx - mIconSize / 2f);
++        final int iconTop = (int) (h - mIconSize);
++        mIcon.setBounds(iconLeft, iconTop, iconLeft + (int) mIconSize, h);
++
++        updateFillShader();
++    }
++
++    private void updateFillShader() {
++        if (mTorchOn) {
++            mFillPaint.setShader(new LinearGradient(0, mBeamBottom, 0, mBeamTop,
++                    mFillColor, mFillTopColor, Shader.TileMode.CLAMP));
++        } else {
++            mFillPaint.setShader(null);
++            mFillPaint.setColor(mOffFillColor);
++        }
++    }
++
++    @Override
++    protected void onDraw(Canvas canvas) {
++        canvas.drawRoundRect(mLensRect, mLensHeight / 2f, mLensHeight / 2f, mLensPaint);
++        canvas.drawPath(mBeamPath, mTrackPaint);
++
++        final float fillTop = mBeamBottom - (mBeamBottom - mBeamTop) * mLevel / mMax;
++        canvas.save();
++        canvas.clipRect(0, fillTop, getWidth(), mBeamBottom);
++        canvas.drawPath(mBeamPath, mFillPaint);
++        canvas.restore();
++
++        mIcon.draw(canvas);
++    }
++
++    @Override
++    public boolean onTouchEvent(MotionEvent event) {
++        if (!isEnabled()) {
++            return false;
++        }
++        switch (event.getActionMasked()) {
++            case MotionEvent.ACTION_DOWN:
++                getParent().requestDisallowInterceptTouchEvent(true);
++                setPressed(true);
++                // fall through
++            case MotionEvent.ACTION_MOVE:
++                final float fraction = (mBeamBottom - event.getY()) / (mBeamBottom - mBeamTop);
++                updateLevelFromUser((int) Math.ceil(fraction * mMax));
++                return true;
++            case MotionEvent.ACTION_UP:
++            case MotionEvent.ACTION_CANCEL:
++                setPressed(false);
++                getParent().requestDisallowInterceptTouchEvent(false);
++                return true;
++        }
++        return super.onTouchEvent(event);
++    }
++
++    private void updateLevelFromUser(int level) {
++        level = Math.max(1, Math.min(level, mMax));
++        if (level != mLevel || !mTorchOn) {
++            setLevel(level);
++            if (mListener != null) {
++                mListener.onLevelChanged(mLevel);
++            }
++        }
++    }
++
++    private void updateContentDescription() {
++        setContentDescription(getContext().getString(R.string.accessibility_flashlight_strength,
++                NumberFormat.getPercentInstance().format((float) mLevel / mMax)));
++    }
++
++    @Override
++    public CharSequence getAccessibilityClassName() {
++        return SeekBar.class.getName();
++    }
++
++    @Override
++    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
++        super.onInitializeAccessibilityNodeInfo(info);
++        info.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(
++                AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT, 1, mMax, mLevel));
++        if (mLevel > 1) {
++            info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
++        }
++        if (mLevel < mMax) {
++            info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD);
++        }
++    }
++
++    @Override
++    public boolean performAccessibilityAction(int action, Bundle arguments) {
++        if (!isEnabled()) {
++            return super.performAccessibilityAction(action, arguments);
++        }
++        if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) {
++            updateLevelFromUser(mLevel + 1);
++            return true;
++        } else if (action == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) {
++            updateLevelFromUser(mLevel - 1);
++            return true;
++        }
++        return super.performAccessibilityAction(action, arguments);
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthDialog.java b/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthDialog.java
+new file mode 100644
+index 00000000000..959e8818335
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthDialog.java
+@@ -0,0 +1,114 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.flashlight;
++
++import android.content.Context;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.Looper;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.WindowManager;
++import android.widget.Button;
++
++import com.android.systemui.Dependency;
++import com.android.systemui.R;
++import com.android.systemui.statusbar.phone.SystemUIDialog;
++import com.android.systemui.statusbar.policy.FlashlightController;
++
++/**
++ * Flashlight strength dialog shown on long press of the flashlight tile.
++ */
++public class FlashlightStrengthDialog extends SystemUIDialog implements
++        FlashlightController.FlashlightListener {
++
++    private final Handler mUiHandler = new Handler(Looper.getMainLooper());
++    private final FlashlightController mController;
++
++    private FlashlightBeamView mBeam;
++    private Button mToggle;
++
++    public FlashlightStrengthDialog(Context context) {
++        super(context);
++        mController = Dependency.get(FlashlightController.class);
++        getWindow().setBackgroundDrawableResource(R.drawable.flashlight_strength_dialog_bg);
++    }
++
++    /** @return true if the flash unit supports changing its strength. */
++    public static boolean isSupported() {
++        return Dependency.get(FlashlightController.class).getMaxStrengthLevel() > 0;
++    }
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        final View view = LayoutInflater.from(getContext()).inflate(
++                R.layout.flashlight_strength_dialog, null);
++        // Replace the AlertDialog layout, it clips custom views and wraps the width
++        setContentView(view);
++        getWindow().setLayout(getContext().getResources().getDimensionPixelSize(
++                R.dimen.flashlight_strength_dialog_width), WindowManager.LayoutParams.WRAP_CONTENT);
++
++        mBeam = view.findViewById(R.id.flashlight_strength_beam);
++        mBeam.setMax(mController.getMaxStrengthLevel());
++        mBeam.setLevel(mController.getStrengthLevel());
++        mBeam.setOnLevelChangeListener(level -> {
++            mController.setStrengthLevel(level);
++            mBeam.setTorchOn(true);
++        });
++
++        mToggle = view.findViewById(R.id.flashlight_strength_toggle);
++        mToggle.setOnClickListener(v -> mController.setFlashlight(!mController.isEnabled()));
++        view.findViewById(R.id.flashlight_strength_done).setOnClickListener(v -> dismiss());
++    }
++
++    @Override
++    protected void onStart() {
++        super.onStart();
++        mController.addCallback(this);
++    }
++
++    @Override
++    protected void onStop() {
++        super.onStop();
++        mController.removeCallback(this);
++    }
++
++    private void updateState() {
++        final boolean on = mController.isEnabled();
++        mBeam.setTorchOn(on);
++        mToggle.setText(on ? R.string.flashlight_strength_turn_off
++                : R.string.flashlight_strength_turn_on);
++        mToggle.setEnabled(mController.isAvailable());
++        mBeam.setEnabled(mController.isAvailable());
++    }
++
++    @Override
++    public void onFlashlightChanged(boolean enabled) {
++        mUiHandler.post(this::updateState);
++    }
++
++    @Override
++    public void onFlashlightError() {
++        mUiHandler.post(this::updateState);
++    }
++
++    @Override
++    public void onFlashlightAvailabilityChanged(boolean available) {
++        mUiHandler.post(this::updateState);
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthReceiver.java b/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthReceiver.java
+new file mode 100644
+index 00000000000..f6a868ed51a
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/flashlight/FlashlightStrengthReceiver.java
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.flashlight;
++
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++
++/**
++ * Shows the flashlight strength dialog for Settings.
++ */
++public class FlashlightStrengthReceiver extends BroadcastReceiver {
++
++    public static final String ACTION_SHOW_FLASHLIGHT_STRENGTH =
++            "com.android.systemui.action.SHOW_FLASHLIGHT_STRENGTH";
++
++    @Override
++    public void onReceive(Context context, Intent intent) {
++        if (ACTION_SHOW_FLASHLIGHT_STRENGTH.equals(intent.getAction())
++                && FlashlightStrengthDialog.isSupported()) {
++            new FlashlightStrengthDialog(context.getApplicationContext()).show();
++        }
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/tiles/FlashlightTile.java b/packages/SystemUI/src/com/android/systemui/qs/tiles/FlashlightTile.java
+index f2ead1cbca9..9dd26932ee7 100644
+--- a/packages/SystemUI/src/com/android/systemui/qs/tiles/FlashlightTile.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/tiles/FlashlightTile.java
+@@ -26,6 +26,7 @@ import android.widget.Switch;
+ import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
+ import com.android.systemui.Dependency;
+ import com.android.systemui.R;
++import com.android.systemui.flashlight.FlashlightStrengthDialog;
+ import com.android.systemui.plugins.qs.QSTile.BooleanState;
+ import com.android.systemui.qs.QSHost;
+ import com.android.systemui.qs.tileimpl.QSTileImpl;
+@@ -93,7 +94,11 @@ public class FlashlightTile extends QSTileImpl<BooleanState> implements
+ 
+     @Override
+     protected void handleLongClick() {
+-        handleClick();
++        if (!FlashlightStrengthDialog.isSupported()) {
++            handleClick();
++            return;
++        }
++        mUiHandler.post(() -> new FlashlightStrengthDialog(mContext).show());
+     }
+ 
+     @Override
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightController.java b/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightController.java
+index e576f36d573..3bbbc5f1d65 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightController.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightController.java
+@@ -24,6 +24,13 @@ public interface FlashlightController extends CallbackController<FlashlightListe
+     boolean isAvailable();
+     boolean isEnabled();
+ 
++    /** @return number of torch strength levels, or 0 if strength can't be changed. */
++    int getMaxStrengthLevel();
++    /** @return current torch strength level, from 1 to {@link #getMaxStrengthLevel()}. */
++    int getStrengthLevel();
++    /** Sets the torch strength level and turns the flashlight on. */
++    void setStrengthLevel(int level);
++
+     public interface FlashlightListener {
+ 
+         /**
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightControllerImpl.java b/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightControllerImpl.java
+index f0cfa2c4093..22059189228 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightControllerImpl.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/policy/FlashlightControllerImpl.java
+@@ -24,9 +24,11 @@ import android.hardware.camera2.CameraManager;
+ import android.os.Handler;
+ import android.os.HandlerThread;
+ import android.os.Process;
++import android.os.SystemProperties;
+ import android.text.TextUtils;
+ import android.util.Log;
+ 
++import com.android.systemui.R;
+ import com.android.systemui.statusbar.policy.FlashlightController.FlashlightListener;
+ 
+ import java.io.FileDescriptor;
+@@ -60,9 +62,21 @@ public class FlashlightControllerImpl implements FlashlightController {
+     private String mCameraId;
+     private boolean mTorchAvailable;
+ 
++    /** Torch strength property read by the camera HAL, and the value for each level */
++    private final String mStrengthProperty;
++    private final int[] mStrengthValues;
++    private final int mDefaultStrengthLevel;
++    /** Level waiting to be applied on mHandler, 0 if none. Lock on {@code this} */
++    private int mPendingStrengthLevel;
++
+     public FlashlightControllerImpl(Context context) {
+         mContext = context;
+         mCameraManager = (CameraManager) mContext.getSystemService(Context.CAMERA_SERVICE);
++        mStrengthProperty = context.getString(R.string.config_flashlightStrengthProperty);
++        mStrengthValues = context.getResources().getIntArray(
++                R.array.config_flashlightStrengthValues);
++        mDefaultStrengthLevel = context.getResources().getInteger(
++                R.integer.config_flashlightStrengthDefaultLevel);
+ 
+         tryInitCamera();
+     }
+@@ -102,6 +116,70 @@ public class FlashlightControllerImpl implements FlashlightController {
+         }
+     }
+ 
++    public int getMaxStrengthLevel() {
++        return TextUtils.isEmpty(mStrengthProperty) ? 0 : mStrengthValues.length;
++    }
++
++    public int getStrengthLevel() {
++        final int max = getMaxStrengthLevel();
++        if (max == 0) return 0;
++        final int value = SystemProperties.getInt(mStrengthProperty, -1);
++        if (value < 0) {
++            return Math.max(1, Math.min(mDefaultStrengthLevel, max));
++        }
++        int level = 1;
++        for (int i = 0; i < max; i++) {
++            if (mStrengthValues[i] <= value) {
++                level = i + 1;
++            }
++        }
++        return level;
++    }
++
++    public void setStrengthLevel(int level) {
++        final int max = getMaxStrengthLevel();
++        if (max == 0) return;
++        final boolean post;
++        synchronized (this) {
++            // Only the latest level matters, drop levels passed while dragging
++            post = mPendingStrengthLevel == 0;
++            mPendingStrengthLevel = Math.max(1, Math.min(level, max));
++        }
++        if (post) {
++            ensureHandler();
++            mHandler.post(mApplyStrength);
++        }
++    }
++
++    private final Runnable mApplyStrength = this::applyPendingStrength;
++
++    private void applyPendingStrength() {
++        final int level;
++        final boolean reapply;
++        synchronized (this) {
++            level = mPendingStrengthLevel;
++            mPendingStrengthLevel = 0;
++            if (mCameraId == null) return;
++            reapply = mFlashlightEnabled;
++        }
++        try {
++            SystemProperties.set(mStrengthProperty, String.valueOf(mStrengthValues[level - 1]));
++        } catch (RuntimeException e) {
++            Log.e(TAG, "Couldn't set torch strength", e);
++            return;
++        }
++        if (!reapply) {
++            setFlashlight(true);
++            return;
++        }
++        // Torch is already on, turning it on again makes the HAL re-read the strength
++        try {
++            mCameraManager.setTorchMode(mCameraId, true);
++        } catch (CameraAccessException e) {
++            Log.e(TAG, "Couldn't update torch strength", e);
++        }
++    }
++
+     public boolean hasFlashlight() {
+         return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_FLASH);
+     }
+@@ -251,5 +329,9 @@ public class FlashlightControllerImpl implements FlashlightController {
+         pw.println(mFlashlightEnabled);
+         pw.print("  mTorchAvailable=");
+         pw.println(mTorchAvailable);
++        pw.print("  strengthLevel=");
++        pw.print(getStrengthLevel());
++        pw.print("/");
++        pw.println(getMaxStrengthLevel());
+     }
+ }
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/utils/leaks/FakeFlashlightController.java b/packages/SystemUI/tests/src/com/android/systemui/utils/leaks/FakeFlashlightController.java
+index f6fd2cb8f3b..5b665942561 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/utils/leaks/FakeFlashlightController.java
++++ b/packages/SystemUI/tests/src/com/android/systemui/utils/leaks/FakeFlashlightController.java
+@@ -44,4 +44,19 @@ public class FakeFlashlightController extends BaseLeakChecker<FlashlightListener
+     public boolean isEnabled() {
+         return false;
+     }
++
++    @Override
++    public int getMaxStrengthLevel() {
++        return 0;
++    }
++
++    @Override
++    public int getStrengthLevel() {
++        return 0;
++    }
++
++    @Override
++    public void setStrengthLevel(int level) {
++
++    }
+ }
+-- 
+2.43.0
+

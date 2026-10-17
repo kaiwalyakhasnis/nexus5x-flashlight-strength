@@ -1,0 +1,154 @@
+From f9187b58f99b8f464fb51d2c0f1b83ce152d4ca6 Mon Sep 17 00:00:00 2001
+From: kk <kaiwalya.khasnis57@gmail.com>
+Date: Sat, 17 Oct 2026 10:22:25 +0900
+Subject: [PATCH] Settings: add flashlight strength to Display
+
+Opens the SystemUI flashlight strength dialog, the same one as a long
+press on the flashlight tile. Only shown when SystemUI has a strength
+property configured and the device has a flash.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ res/values/cm_strings.xml                     |  4 +
+ res/xml/display_settings.xml                  |  5 ++
+ src/com/android/settings/DisplaySettings.java |  2 +
+ ...lashlightStrengthPreferenceController.java | 78 +++++++++++++++++++
+ 4 files changed, 89 insertions(+)
+ create mode 100644 src/com/android/settings/display/FlashlightStrengthPreferenceController.java
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 91238336d9..3a0546671f 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -374,4 +374,8 @@
+     <string name="data_usage_app_restrict_data_summary">Enable usage of cellular data</string>
+     <string name="data_usage_app_restrict_wifi">Wi\u2011Fi data</string>
+     <string name="data_usage_app_restrict_wifi_summary">Enable usage of Wi\u2011Fi data</string>
++
++    <!-- Display settings: flashlight strength -->
++    <string name="flashlight_strength_title">Flashlight strength</string>
++    <string name="flashlight_strength_summary">Adjust how bright the flashlight is</string>
+ </resources>
+diff --git a/res/xml/display_settings.xml b/res/xml/display_settings.xml
+index e50305eb15..60153424b0 100644
+--- a/res/xml/display_settings.xml
++++ b/res/xml/display_settings.xml
+@@ -129,6 +129,11 @@
+         android:title="@string/camera_gesture_title"
+         android:summary="@string/camera_gesture_desc" />
+ 
++    <Preference
++        android:key="flashlight_strength"
++        android:title="@string/flashlight_strength_title"
++        android:summary="@string/flashlight_strength_summary" />
++
+     <SwitchPreference
+         android:key="lift_to_wake"
+         android:title="@string/lift_to_wake_title" />
+diff --git a/src/com/android/settings/DisplaySettings.java b/src/com/android/settings/DisplaySettings.java
+index 027954c381..b1a9f0c874 100644
+--- a/src/com/android/settings/DisplaySettings.java
++++ b/src/com/android/settings/DisplaySettings.java
+@@ -28,6 +28,7 @@ import com.android.settings.display.AutoRotatePreferenceController;
+ import com.android.settings.display.BrightnessLevelPreferenceController;
+ import com.android.settings.display.CameraGesturePreferenceController;
+ import com.android.settings.display.ColorModePreferenceController;
++import com.android.settings.display.FlashlightStrengthPreferenceController;
+ import com.android.settings.display.FontSizePreferenceController;
+ import com.android.settings.display.LiftToWakePreferenceController;
+ import com.android.settings.display.NightDisplayPreferenceController;
+@@ -93,6 +94,7 @@ public class DisplaySettings extends DashboardFragment {
+         controllers.add(new AutoBrightnessPreferenceController(context, KEY_AUTO_BRIGHTNESS));
+         // controllers.add(new AutoRotatePreferenceController(context, lifecycle));
+         controllers.add(new CameraGesturePreferenceController(context));
++        controllers.add(new FlashlightStrengthPreferenceController(context));
+         controllers.add(new FontSizePreferenceController(context));
+         controllers.add(new LiftToWakePreferenceController(context));
+         controllers.add(new NightDisplayPreferenceController(context));
+diff --git a/src/com/android/settings/display/FlashlightStrengthPreferenceController.java b/src/com/android/settings/display/FlashlightStrengthPreferenceController.java
+new file mode 100644
+index 0000000000..6e21377e0d
+--- /dev/null
++++ b/src/com/android/settings/display/FlashlightStrengthPreferenceController.java
+@@ -0,0 +1,78 @@
++/*
++ * Copyright (C) 2026 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.display;
++
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.content.res.Resources;
++import android.os.UserHandle;
++import android.support.v7.preference.Preference;
++import android.text.TextUtils;
++
++import com.android.settings.core.PreferenceControllerMixin;
++import com.android.settingslib.core.AbstractPreferenceController;
++
++/**
++ * Opens the SystemUI flashlight strength dialog, the same one shown on long press
++ * of the flashlight Quick Settings tile.
++ */
++public class FlashlightStrengthPreferenceController extends AbstractPreferenceController
++        implements PreferenceControllerMixin {
++
++    private static final String KEY_FLASHLIGHT_STRENGTH = "flashlight_strength";
++
++    private static final String SYSTEMUI_PACKAGE = "com.android.systemui";
++    private static final String ACTION_SHOW_FLASHLIGHT_STRENGTH =
++            "com.android.systemui.action.SHOW_FLASHLIGHT_STRENGTH";
++
++    public FlashlightStrengthPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return KEY_FLASHLIGHT_STRENGTH;
++    }
++
++    @Override
++    public boolean isAvailable() {
++        final PackageManager pm = mContext.getPackageManager();
++        if (!pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_FLASH)) {
++            return false;
++        }
++        try {
++            final Resources res = pm.getResourcesForApplication(SYSTEMUI_PACKAGE);
++            final int id = res.getIdentifier("config_flashlightStrengthProperty", "string",
++                    SYSTEMUI_PACKAGE);
++            return id != 0 && !TextUtils.isEmpty(res.getString(id));
++        } catch (PackageManager.NameNotFoundException e) {
++            return false;
++        }
++    }
++
++    @Override
++    public boolean handlePreferenceTreeClick(Preference preference) {
++        if (!KEY_FLASHLIGHT_STRENGTH.equals(preference.getKey())) {
++            return false;
++        }
++        final Intent intent = new Intent(ACTION_SHOW_FLASHLIGHT_STRENGTH)
++                .setPackage(SYSTEMUI_PACKAGE);
++        mContext.sendBroadcastAsUser(intent, UserHandle.SYSTEM);
++        return true;
++    }
++}
+-- 
+2.43.0
+

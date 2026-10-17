@@ -1,0 +1,52 @@
+From 79bc893af622e7b6c102dec17a07e5412bda80b2 Mon Sep 17 00:00:00 2001
+From: kk <kaiwalya.khasnis57@gmail.com>
+Date: Sat, 17 Oct 2026 10:22:10 +0900
+Subject: [PATCH 3/3] bullhead: overlay: flashlight strength levels
+
+Enable the SystemUI flashlight strength dialog with the 15 torch steps
+of the PMI8994: leds-qpnp-flash programs current * 15 / 200, so these are
+the lowest currents for register values 0..14. Default to step 10, which
+the old 127mA lands on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../packages/SystemUI/res/values/config.xml   | 25 ++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/overlay/frameworks/base/packages/SystemUI/res/values/config.xml b/overlay/frameworks/base/packages/SystemUI/res/values/config.xml
+index d2dbefb..6ae80e5 100644
+--- a/overlay/frameworks/base/packages/SystemUI/res/values/config.xml
++++ b/overlay/frameworks/base/packages/SystemUI/res/values/config.xml
+@@ -36,5 +36,28 @@
+ 
+     <!-- Doze: can we assume the pickup sensor includes a proximity check? -->
+     <bool name="doze_pickup_performs_proximity_check">true</bool>
+-</resources>
+ 
++    <!-- Flashlight strength: torch current in mA per level, read by QCameraFlash.
++         The PMI8994 torch has 16 steps (current * 15 / 200 in leds-qpnp-flash), but
++         msm_flash rejects 200mA, so these are the lowest currents for steps 0..14. -->
++    <string name="config_flashlightStrengthProperty" translatable="false">persist.vendor.torch.current</string>
++    <integer-array name="config_flashlightStrengthValues">
++        <item>13</item>
++        <item>14</item>
++        <item>27</item>
++        <item>40</item>
++        <item>54</item>
++        <item>67</item>
++        <item>80</item>
++        <item>94</item>
++        <item>107</item>
++        <item>120</item>
++        <item>134</item>
++        <item>147</item>
++        <item>160</item>
++        <item>174</item>
++        <item>187</item>
++    </integer-array>
++    <!-- 120mA, the step the HAL default of 127mA lands on -->
++    <integer name="config_flashlightStrengthDefaultLevel">10</integer>
++</resources>
+-- 
+2.43.0
+

@@ -1,0 +1,60 @@
+From db87e094b5cdcf3d7a873b315c6b1dedfef30add Mon Sep 17 00:00:00 2001
+From: kk <kaiwalya.khasnis57@gmail.com>
+Date: Sat, 17 Oct 2026 10:22:09 +0900
+Subject: [PATCH 2/3] bullhead: sepolicy: let SystemUI set the torch strength
+
+Add torch_prop for persist.vendor.torch.*, settable by platform_app
+(SystemUI) and readable by hal_camera (the camera HAL is passthrough
+in cameraserver on bullhead).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sepolicy/hal_camera.te     | 3 +++
+ sepolicy/platform_app.te   | 3 +++
+ sepolicy/property.te       | 1 +
+ sepolicy/property_contexts | 1 +
+ 4 files changed, 8 insertions(+)
+
+diff --git a/sepolicy/hal_camera.te b/sepolicy/hal_camera.te
+index 0811092..67ceab8 100644
+--- a/sepolicy/hal_camera.te
++++ b/sepolicy/hal_camera.te
+@@ -4,3 +4,6 @@ allow hal_camera perfd_data_file:dir search;
+ allow hal_camera perfd_data_file:sock_file write;
+ allow hal_camera perfd:unix_stream_socket connectto;
+ allow hal_camera scheduling_policy_service:service_manager find;
++
++# Read the flashlight strength set by SystemUI
++get_prop(hal_camera, torch_prop)
+diff --git a/sepolicy/platform_app.te b/sepolicy/platform_app.te
+index 6074d2e..691f170 100644
+--- a/sepolicy/platform_app.te
++++ b/sepolicy/platform_app.te
+@@ -5,3 +5,6 @@ userdebug_or_eng(`
+   # qxdmlogger access to /dev/diag
+   allow platform_app diag_device:chr_file rw_file_perms;
+ ')
++
++# SystemUI sets the flashlight strength
++set_prop(platform_app, torch_prop)
+diff --git a/sepolicy/property.te b/sepolicy/property.te
+index 5fc4726..5daedc0 100644
+--- a/sepolicy/property.te
++++ b/sepolicy/property.te
+@@ -3,3 +3,4 @@ type qseecomtee_prop, property_type;
+ type radio_atfwd_prop, property_type;
+ type qcom_ims_prop, property_type;
+ type contexthub_prop, property_type;
++type torch_prop, property_type;
+diff --git a/sepolicy/property_contexts b/sepolicy/property_contexts
+index 07ed728..23c825a 100644
+--- a/sepolicy/property_contexts
++++ b/sepolicy/property_contexts
+@@ -5,3 +5,4 @@ radio.atfwd.         u:object_r:radio_atfwd_prop:s0
+ sys.ims.             u:object_r:qcom_ims_prop:s0
+ sensors.contexthub.  u:object_r:contexthub_prop:s0
+ net.r_rmnet          u:object_r:net_radio_prop:s0
++persist.vendor.torch. u:object_r:torch_prop:s0
+-- 
+2.43.0
+

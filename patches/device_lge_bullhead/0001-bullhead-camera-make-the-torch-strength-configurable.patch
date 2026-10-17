@@ -1,0 +1,148 @@
+From c57023ff4c8045f80cb8310dc273a75f1b1ae22b Mon Sep 17 00:00:00 2001
+From: kk <kaiwalya.khasnis57@gmail.com>
+Date: Sat, 17 Oct 2026 10:22:09 +0900
+Subject: [PATCH 1/3] bullhead: camera: make the torch strength configurable
+
+QCameraFlash always asked msm_flash for 200mA, but msm_flash_low() only
+accepts currents below the 200mA DT max-current and otherwise falls back
+to LED_HALF, so the torch has always run at 127mA.
+
+Read the torch current from persist.vendor.torch.current instead,
+clamped to 13..199mA (13mA is the leds-qpnp-flash minimum), with 127mA
+as the default so nothing changes until a strength is chosen.
+
+Turning the torch on while it is already on now re-applies the current.
+The PMI8994 only latches the torch current when the strobe turns on, so
+strobe off and on again, waiting 10ms in between: leds-qpnp-flash
+switches from a workqueue and merges an off and on queued back to back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ camera/QCamera2/util/QCameraFlash.cpp | 51 ++++++++++++++++++++++++---
+ camera/QCamera2/util/QCameraFlash.h   | 10 ++++++
+ 2 files changed, 56 insertions(+), 5 deletions(-)
+
+diff --git a/camera/QCamera2/util/QCameraFlash.cpp b/camera/QCamera2/util/QCameraFlash.cpp
+index e5d3c4c..51fe0a5 100644
+--- a/camera/QCamera2/util/QCameraFlash.cpp
++++ b/camera/QCamera2/util/QCameraFlash.cpp
+@@ -32,6 +32,7 @@
+ #include <linux/media.h>
+ #include <media/msmb_camera.h>
+ #include <media/msm_cam_sensor.h>
++#include <cutils/properties.h>
+ #include <utils/Log.h>
+ 
+ #include "HAL3/QCamera3HWI.h"
+@@ -202,6 +203,27 @@ int32_t QCameraFlash::initFlash(const int camera_id)
+     return retVal;
+ }
+ 
++/*===========================================================================
++ * FUNCTION   : getTorchCurrent
++ *
++ * DESCRIPTION: Read the user selected torch current, clamped to what the
++ *              flash driver accepts.
++ *
++ * PARAMETERS : None
++ *
++ * RETURN     : torch current in mA
++ *==========================================================================*/
++static int32_t getTorchCurrent()
++{
++    int32_t current = property_get_int32(QCAMERA_TORCH_CURRENT_PROP,
++            QCAMERA_TORCH_CURRENT_DEFAULT);
++    if (current < QCAMERA_TORCH_CURRENT_MIN)
++        current = QCAMERA_TORCH_CURRENT_MIN;
++    else if (current > QCAMERA_TORCH_CURRENT_MAX)
++        current = QCAMERA_TORCH_CURRENT_MAX;
++    return current;
++}
++
+ /*===========================================================================
+  * FUNCTION   : setFlashMode
+  *
+@@ -216,7 +238,9 @@ int32_t QCameraFlash::initFlash(const int camera_id)
+  * RETURN     :
+  *   0        : success
+  *   -EINVAL  : No camera present at camera_id, or it is not inited.
+- *   -EALREADY: Flash is already in requested state
++ *   -EALREADY: Flash is already in requested state (when already on,
++ *              the torch current is re-applied so strength changes
++ *              take effect immediately)
+  *==========================================================================*/
+ int32_t QCameraFlash::setFlashMode(const int camera_id, const bool mode)
+ {
+@@ -226,7 +250,7 @@ int32_t QCameraFlash::setFlashMode(const int camera_id, const bool mode)
+     if (camera_id < 0 || camera_id >= MM_CAMERA_MAX_NUM_SENSORS) {
+         ALOGE("%s: Invalid camera id: %d", __func__, camera_id);
+         retVal = -EINVAL;
+-    } else if (mode == m_flashOn[camera_id]) {
++    } else if (!mode && !m_flashOn[camera_id]) {
+         CDBG("%s: flash %d is already in requested state: %d",
+                 __func__,
+                 camera_id,
+@@ -236,19 +260,36 @@ int32_t QCameraFlash::setFlashMode(const int camera_id, const bool mode)
+         ALOGE("%s: called for uninited flash: %d", __func__, camera_id);
+         retVal = -EINVAL;
+     }  else {
++        int32_t current = getTorchCurrent();
+         memset(&cfg, 0, sizeof(struct msm_flash_cfg_data_t));
+         for (int i = 0; i < MAX_LED_TRIGGERS; i++)
+-            cfg.flash_current[i] = QCAMERA_TORCH_CURRENT_VALUE;
++            cfg.flash_current[i] = current;
+         cfg.cfg_type = mode ? CFG_FLASH_LOW: CFG_FLASH_OFF;
+ 
++        if (mode && m_flashOn[camera_id]) {
++            /* The PMIC latches the torch current when the strobe turns on,
++             * so strobe off and on again to apply a new strength. The LED
++             * driver switches from a workqueue and merges an off and on
++             * queued back to back, so let the off run first. */
++            cfg.cfg_type = CFG_FLASH_OFF;
++            ioctl(m_flashFds[camera_id], VIDIOC_MSM_FLASH_CFG, &cfg);
++            usleep(QCAMERA_TORCH_RESTROBE_DELAY_US);
++            cfg.cfg_type = CFG_FLASH_LOW;
++        }
++
+         retVal = ioctl(m_flashFds[camera_id],
+                         VIDIOC_MSM_FLASH_CFG,
+                         &cfg);
+-        if (retVal < 0)
++        if (retVal < 0) {
+             ALOGE("%s: Unable to change flash mode to %d for camera id: %d",
+                     __func__, mode, camera_id);
+-        else
++        } else if (mode == m_flashOn[camera_id]) {
++            CDBG("%s: flash %d torch current updated to %d mA",
++                    __func__, camera_id, current);
++            retVal = -EALREADY;
++        } else {
+             m_flashOn[camera_id] = mode;
++        }
+     }
+     return retVal;
+ }
+diff --git a/camera/QCamera2/util/QCameraFlash.h b/camera/QCamera2/util/QCameraFlash.h
+index 16cab03..26fc390 100755
+--- a/camera/QCamera2/util/QCameraFlash.h
++++ b/camera/QCamera2/util/QCameraFlash.h
+@@ -40,6 +40,16 @@ namespace qcamera {
+ 
+ #define QCAMERA_TORCH_CURRENT_VALUE 200
+ 
++/* Torch current in mA, set by the SystemUI flashlight strength dialog.
++ * msm_flash only accepts values below the 200mA DT max-current, and
++ * leds-qpnp-flash clamps anything under 13mA up to 13mA. */
++#define QCAMERA_TORCH_CURRENT_PROP "persist.vendor.torch.current"
++#define QCAMERA_TORCH_CURRENT_MIN 13
++#define QCAMERA_TORCH_CURRENT_MAX (QCAMERA_TORCH_CURRENT_VALUE - 1)
++#define QCAMERA_TORCH_CURRENT_DEFAULT 127
++/* Off time when re-applying the torch current, the driver's off takes ~2.2ms */
++#define QCAMERA_TORCH_RESTROBE_DELAY_US 10000
++
+ class QCameraFlash {
+ public:
+     static QCameraFlash& getInstance();
+-- 
+2.43.0
+
